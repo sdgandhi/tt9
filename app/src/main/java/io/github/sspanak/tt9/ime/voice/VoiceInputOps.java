@@ -104,7 +104,7 @@ public class VoiceInputOps {
 
 	public void listen(@Nullable Language language) {
 		this.language = language;
-		if (forceAlternativeInput || recognizerSupport.isAlternativeAvailable(ims)) {
+		if (forceAlternativeInput || !isGoogleRecognitionAvailable()) {
 			ims.startActivity(VoiceInputPickerActivity.generateShowIntent(ims));
 		} else {
 			recognizerSupport.setLanguage(language).checkOfflineSupport(
@@ -112,6 +112,13 @@ public class VoiceInputOps {
 				() -> new Handler(Looper.getMainLooper()).post(this::listen)
 			);
 		}
+	}
+
+
+	private boolean isGoogleRecognitionAvailable() {
+		return
+			recognizerSupport.isGoogleOnlineRecognitionAvailable(ims)
+			|| recognizerSupport.isGoogleOfflineRecognitionAvailable(ims);
 	}
 
 
