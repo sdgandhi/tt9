@@ -8,8 +8,10 @@ import androidx.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
@@ -26,9 +28,11 @@ public class DataStore {
 	private final static String LOG_TAG = DataStore.class.getSimpleName();
 
 	private static ExecutorService executor;
+	private static ScheduledExecutorService timeoutExecutor;
 
 	@Nullable private static Future<?> getWordsTask;
-	@NonNull private static CancellationSignal getWordsCancellationSignal = new CancellationSignal();
+	@Nullable private static volatile CancellationSignal getWordsCancellationSignal;
+	private static volatile int getWordsGeneration = 0;
 
 	private static WordPairStore pairs;
 	private static WordStore words;
@@ -36,6 +40,11 @@ public class DataStore {
 
 	public static void init(@NonNull Context context) {
 		executor = executor == null ? SupremeExecutor.get() : executor;
+		timeoutExecutor = timeoutExecutor == null || timeoutExecutor.isShutdown() || timeoutExecutor.isTerminated() ? Executors.newSingleThreadScheduledExecutor((runnable) -> {
+			Thread thread = new Thread(runnable, "TT9-getWords-timeout");
+			thread.setDaemon(true);
+			return thread;
+		}) : timeoutExecutor;
 		pairs = pairs == null ? new WordPairStore(context.getApplicationContext()) : pairs;
 		words = words == null ? new WordStore(context.getApplicationContext()) : words;
 	}
@@ -106,38 +115,56 @@ public class DataStore {
 	}
 
 
-	public static void getWords(Consumer<ArrayList<String>> dataHandler, Language language, String sequence, boolean onlyExactSequence, String filter, boolean orderByLength, int minWords, int maxWords) {
+	public static synchronized void getWords(Consumer<ArrayList<String>> dataHandler, Language language, String sequence, boolean onlyExactSequence, String filter, boolean orderByLength, int minWords, int maxWords) {
 		if (getWordsTask != null && !getWordsTask.isDone()) {
-			getWordsCancellationSignal.cancel();
+			CancellationSignal cancellationSignal = getWordsCancellationSignal;
+			if (cancellationSignal != null) {
+				cancellationSignal.cancel();
+			}
 		}
 
-		getWordsCancellationSignal = new CancellationSignal();
-		getWordsTask = runInThread(() -> getWordsSync(dataHandler, language, sequence, onlyExactSequence, filter, orderByLength, minWords, maxWords));
-		runInThread(DataStore::setGetWordsTimeout);
+		final int generation = ++getWordsGeneration;
+		final CancellationSignal cancellationSignal = new CancellationSignal();
+		getWordsCancellationSignal = cancellationSignal;
+		getWordsTask = runInThread(() -> getWordsSync(dataHandler, language, sequence, onlyExactSequence, filter, orderByLength, minWords, maxWords, cancellationSignal, generation));
+		setGetWordsTimeout(getWordsTask, cancellationSignal, generation);
 	}
 
 
-	private static void getWordsSync(Consumer<ArrayList<String>> dataHandler, Language language, String sequence, boolean onlyExactSequence, String filter, boolean orderByLength, int minWords, int maxWords) {
+	private static void getWordsSync(Consumer<ArrayList<String>> dataHandler, Language language, String sequence, boolean onlyExactSequence, String filter, boolean orderByLength, int minWords, int maxWords, @NonNull CancellationSignal cancellationSignal, int generation) {
 		try {
-			ArrayList<String> data = words.getMany(getWordsCancellationSignal, language, sequence, onlyExactSequence, filter, orderByLength, minWords, maxWords);
-			dataHandler.accept(data);
+			ArrayList<String> data = words.getMany(cancellationSignal, language, sequence, onlyExactSequence, filter, orderByLength, minWords, maxWords);
+			if (isLatestGetWordsRequest(cancellationSignal, generation)) {
+				dataHandler.accept(data);
+			}
 		} catch (Exception e) {
-			Logger.e(LOG_TAG, "Error fetching words: " + e.getMessage());
+			if (isLatestGetWordsRequest(cancellationSignal, generation)) {
+				Logger.e(LOG_TAG, "Error fetching words: " + e.getMessage());
+			}
 		}
 	}
 
 
-	private static void setGetWordsTimeout() {
-		if (getWordsTask == null) {
+	private static void setGetWordsTimeout(@Nullable Future<?> task, @NonNull CancellationSignal cancellationSignal, int generation) {
+		if (task == null || timeoutExecutor == null || timeoutExecutor.isShutdown() || timeoutExecutor.isTerminated()) {
 			return;
 		}
 
-		try {
-			getWordsTask.get(SettingsStore.SLOW_QUERY_TIMEOUT, TimeUnit.MILLISECONDS);
-		} catch (Exception e) {
-			getWordsCancellationSignal.cancel();
-			Logger.e(LOG_TAG, "Word loading timed out after " + SettingsStore.SLOW_QUERY_TIMEOUT + " ms.");
+		timeoutExecutor.schedule(() -> {
+			if (!task.isDone() && isLatestGetWordsRequest(cancellationSignal, generation)) {
+				cancellationSignal.cancel();
+				Logger.e(LOG_TAG, "Word loading timed out after " + SettingsStore.SLOW_QUERY_TIMEOUT + " ms.");
+			}
+		}, SettingsStore.SLOW_QUERY_TIMEOUT, TimeUnit.MILLISECONDS);
+	}
+
+
+	private static boolean isLatestGetWordsRequest(@NonNull CancellationSignal cancellationSignal, int generation) {
+		if (cancellationSignal.isCanceled() || generation != getWordsGeneration) {
+			return false;
 		}
+
+		return cancellationSignal == getWordsCancellationSignal;
 	}
 
 

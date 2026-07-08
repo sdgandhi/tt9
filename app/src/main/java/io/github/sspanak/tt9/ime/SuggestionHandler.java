@@ -23,6 +23,7 @@ import io.github.sspanak.tt9.util.sys.Clipboard;
 
 abstract public class SuggestionHandler extends TypingHandler {
 	@Nullable private Handler suggestionHandler;
+	private int suggestionGeneration = 0;
 
 
 	@Override
@@ -123,6 +124,7 @@ abstract public class SuggestionHandler extends TypingHandler {
 	 */
 	@Override
 	public void getSuggestions(double loadingId, @Nullable String currentWord, @Nullable Runnable onComplete) {
+		final int generation = nextSuggestionGeneration();
 		if (InputModeKind.isPredictive(mInputMode) && DictionaryLoader.isRunning()) {
 			mInputMode.reset();
 			UI.toastShortSingle(this, R.string.dictionary_loading_please_wait);
@@ -131,7 +133,7 @@ abstract public class SuggestionHandler extends TypingHandler {
 			}
 		} else {
 			mInputMode
-				.setOnSuggestionsUpdated(() -> handleSuggestionsAsync(loadingId, onComplete))
+				.setOnSuggestionsUpdated(() -> handleSuggestionsAsync(generation, loadingId, onComplete))
 				.loadSuggestions(currentWord == null ? suggestionOps.getCurrent() : currentWord);
 		}
 	}
@@ -139,15 +141,23 @@ abstract public class SuggestionHandler extends TypingHandler {
 
 	@WorkerThread
 	public void handleSuggestionsAsync() {
-		handleSuggestionsAsync(0, null);
+		handleSuggestionsAsync(nextSuggestionGeneration(), 0, null);
 	}
 
 
 	@WorkerThread
-	protected void handleSuggestionsAsync(double loadingId, @Nullable Runnable onComplete) {
+	protected void handleSuggestionsAsync(int generation, double loadingId, @Nullable Runnable onComplete) {
+		if (!isCurrentSuggestionGeneration(generation)) {
+			return;
+		}
+
 		final Handler handler = getAsyncHandler();
 		handler.removeCallbacksAndMessages(null);
-		handler.post(() -> handleSuggestions(loadingId, onComplete));
+		handler.post(() -> {
+			if (isCurrentSuggestionGeneration(generation)) {
+				handleSuggestions(loadingId, onComplete);
+			}
+		});
 	}
 
 
@@ -194,6 +204,16 @@ abstract public class SuggestionHandler extends TypingHandler {
 		}
 
 		onAfterSuggestionsHandled(onComplete, surroundingText, trimmedWord, suggestions.isEmpty());
+	}
+
+
+	private int nextSuggestionGeneration() {
+		return ++suggestionGeneration;
+	}
+
+
+	private boolean isCurrentSuggestionGeneration(int generation) {
+		return generation == suggestionGeneration;
 	}
 
 
