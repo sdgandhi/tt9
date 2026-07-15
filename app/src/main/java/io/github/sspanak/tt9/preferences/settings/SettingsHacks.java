@@ -77,7 +77,9 @@ class SettingsHacks extends SettingsAddedWords {
 	 * and on <a href="https://github.com/sspanak/tt9/issues/399">CAT S22</a>.
 	 */
 	public int getKeyPadDebounceTime() {
-		int defaultTime = DeviceInfo.IS_CAT_S22_FLIP ? 50 : 0;
+		// 75 ms catches the CAT S22's occasional contact bounce while remaining shorter than a
+		// realistic intentional release-and-press cycle, including quick repeated-number typing.
+		int defaultTime = DeviceInfo.IS_CAT_S22_FLIP ? 75 : 0;
 		defaultTime = DeviceInfo.IS_QIN_F21 ? 20 : defaultTime;
 		return getStringifiedInt(DropDownKeyPadDebounceTime.NAME, defaultTime);
 	}
